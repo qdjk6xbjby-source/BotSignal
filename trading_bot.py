@@ -244,100 +244,72 @@ async def get_signal(symbol):
         logger.error(f"Ошибка при анализе {symbol}: {e}")
     return None
 
-# Семафор для ограничения параллельных запросов (безопасность + скорость)
-# Снижаем до 2, так как 4 вызывало частые 429 ошибки
-sem = asyncio.Semaphore(2)
-
-# Глобальный флаг, чтобы остановить текущую пачку запросов при получении 429
-global_429_hit = False
-
-async def scan_symbol(symbol):
-    """Обертка для анализа одной пары с учетом семафора и глобального флага 429"""
-    global global_429_hit
-    
-    if global_429_hit:
-        return None
-        
-    async with sem:
-        if global_429_hit: # Повторная проверка после ожидания в семафоре
-            return None
-            
-        try:
-            signal = await get_signal(symbol)
-            if signal == "RATE_LIMIT":
-                global_429_hit = True
-                return "RATE_LIMIT"
-            return signal
-        except Exception as e:
-            logger.error(f"Ошибка при сканировании {symbol}: {e}")
-            return None
-        finally:
-            import random
-            # Чуть увеличим паузу для безопасности
-            await asyncio.sleep(random.uniform(1.0, 2.0))
-
 async def broadcast_signals():
-    global global_429_hit
+    """Главный цикл: последовательное сканирование с большими паузами (Super-Stable Mode)"""
+    import random
     while True:
+        # Обновляем новости раз в час
         if news_fetcher.last_update is None or (get_now_msk() - news_fetcher.last_update).total_seconds() > 3600:
             news_fetcher.fetch_news()
 
         bot_state["is_paused"] = False
-        bot_state["status_msg"] = "Анализ рынка (Con:2)..."
+        bot_state["status_msg"] = "Стабильное сканирование..."
         bot_state["last_scan_time"] = get_now_msk()
         bot_state["total_scans"] += 1
         
-        # Сбрасываем флаг перед началом пачки
-        global_429_hit = False
+        logger.info(f"--- НАЧАЛО ЦИКЛА СКАНИРОВАНИЯ #{bot_state['total_scans']} ---")
         
-        tasks = [scan_symbol(symbol) for symbol in SYMBOLS]
-        results = await asyncio.gather(*tasks)
-        
-        current_cycle_signals = []
-        hit_rate_limit = global_429_hit or any(res == "RATE_LIMIT" for res in results)
-        
-        if hit_rate_limit:
-            bot_state["is_paused"] = True
-            bot_state["status_msg"] = "Пауза из-за лимитов (429)"
-            logger.warning("ОБНАРУЖЕН 429! Весь цикл прерван. Спим 10 минут...")
-            await asyncio.sleep(600)
-            continue
-            
-        for res in results:
-            if res and res != "RATE_LIMIT":
-                current_cycle_signals.append(res)
-            
-        if current_cycle_signals:
-            for signal_data in current_cycle_signals:
-                symbol = signal_data['symbol']
-                rec_type = "📈 ВВЕРХ (BUY)" if signal_data['rec'] == "STRONG_BUY" else "📉 ВНИЗ (SELL)"
-                signal_key = f"{symbol}_{signal_data['rec']}"
+        for symbol in SYMBOLS:
+            try:
+                # Анализируем одну пару
+                signal_data = await get_signal(symbol)
                 
-                if signal_key not in last_signals or (get_now_msk() - last_signals[signal_key]).total_seconds() > 300:
-                    last_signals[signal_key] = get_now_msk()
+                if signal_data == "RATE_LIMIT":
+                    bot_state["is_paused"] = True
+                    bot_state["status_msg"] = "Пауза (429)"
+                    logger.warning("ОБНАРУЖЕН 429! СТОП. Уходим на перерыв 15 минут...")
+                    await asyncio.sleep(900)
+                    break # Прерываем текущий цикл
+                
+                if isinstance(signal_data, dict):
+                    rec_type = "📈 ВВЕРХ (BUY)" if signal_data['rec'] == "STRONG_BUY" else "📉 ВНИЗ (SELL)"
+                    signal_key = f"{symbol}_{signal_data['rec']}"
                     
-                    message_text = (
-                        f"🚀 **НОВЫЙ СИГНАЛ: {symbol}**\n\n"
-                        f"⚠️ **ТОЛЬКО РЕАЛЬНЫЙ РЫНОК (НЕ OTC)**\n\n"
-                        f"⏱ Таймфрейм: **1М + 5М (Подтверждено)**\n"
-                        f"🔔 Рекомендация: **{rec_type}**\n"
-                        f"🎯 Уверенность: **{signal_data['confidence']}%** ({signal_data['indicators']})\n"
-                        f"📈 RSI: **{signal_data['rsi']}** | ADX: **{signal_data['adx']}**\n\n"
-                        f"⏳ Экспирация: **1-2 минуты**\n"
-                        f"🕒 Время (МСК): {get_now_msk().strftime('%H:%M:%S')}"
-                    )
-                    
-                    for user_id in ALLOWED_USERS:
-                        try:
-                            await bot.send_message(chat_id=user_id, text=message_text, parse_mode=ParseMode.MARKDOWN)
-                            logger.info(f"Сигнал {symbol} отправлен {user_id}")
-                        except Exception as e:
-                            logger.error(f"Ошибка отправки {user_id}: {e}")
-                    bot_state["signals_sent"] += 1
+                    # Защита от спама (повтор не чаще чем раз в 5 минут)
+                    if signal_key not in last_signals or (get_now_msk() - last_signals[signal_key]).total_seconds() > 300:
+                        last_signals[signal_key] = get_now_msk()
+                        
+                        message_text = (
+                            f"🚀 **НОВЫЙ СИГНАЛ: {symbol}**\n\n"
+                            f"⚠️ **ТОЛЬКО РЕАЛЬНЫЙ РЫНОК (НЕ OTC)**\n\n"
+                            f"⏱ Таймфрейм: **1М + 5М (Подтверждено)**\n"
+                            f"🔔 Рекомендация: **{rec_type}**\n"
+                            f"🎯 Уверенность: **{signal_data['confidence']}%** ({signal_data['indicators']})\n"
+                            f"📈 RSI: **{signal_data['rsi']}** | ADX: **{signal_data['adx']}**\n\n"
+                            f"⏳ Экспирация: **1-2 минуты**\n"
+                            f"🕒 Время (МСК): {get_now_msk().strftime('%H:%M:%S')}"
+                        )
+                        
+                        for user_id in ALLOWED_USERS:
+                            try:
+                                await bot.send_message(chat_id=user_id, text=message_text, parse_mode=ParseMode.MARKDOWN)
+                                logger.info(f"Сигнал {symbol} отправлен {user_id}")
+                            except Exception as e:
+                                logger.error(f"Ошибка отправки {user_id}: {e}")
+                        bot_state["signals_sent"] += 1
+                
+                # КРИТИЧЕСКИ ВАЖНО: Пауза между ПАРАМИ (3-5 секунд), чтобы имитировать человека
+                await asyncio.sleep(random.uniform(3.0, 5.0))
+                
+            except Exception as e:
+                logger.error(f"Ошибка при обработке {symbol}: {e}")
+                await asyncio.sleep(5)
             
-        # Пауза между ЦИКЛАМИ 10 секунд
-        bot_state["status_msg"] = "Ожидание (10 сек)..."
-        await asyncio.sleep(10)
+        # Пауза между полными ЦИКЛАМИ рынка (60 секунд)
+        # Это даст IP «отдых» и снизит вероятность детекции как бота
+        logger.info(f"--- ЦИКЛ ЗАВЕРШЕН. Отдых 60 секунд. ---")
+        bot_state["status_msg"] = "Отдых (60 сек)..."
+        await asyncio.sleep(60)
 
 @dp.message()
 async def cmd_handler(message: types.Message):
