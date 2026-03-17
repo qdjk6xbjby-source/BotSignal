@@ -1,3 +1,4 @@
 tradingview-ta
 aiogram
 python-dotenv
+requests
