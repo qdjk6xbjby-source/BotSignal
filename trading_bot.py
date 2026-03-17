@@ -170,7 +170,7 @@ async def get_signal(symbol):
             symbol=symbol,
             screener="forex",
             exchange="FX_IDC",
-            interval=Interval.INTERVAL_5_MINUTE,
+            interval=Interval.INTERVAL_5_MINUTES,
             timeout=10
         )
         analysis_5m = await asyncio.to_thread(handler_5m.get_analysis)
