@@ -25,14 +25,29 @@ from datetime import datetime, timedelta
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Загрузка конфигурации (явно указываем путь к .env в папке скрипта)
+# Функция для получения времени в МСК (UTC+3)
+def get_now_msk():
+    return datetime.utcnow() + timedelta(hours=3)
+
+# Загрузка конфигурации
 env_path = os.path.join(os.path.dirname(__file__), '.env')
-load_dotenv(dotenv_path=env_path)
+if os.path.exists(env_path):
+    load_dotenv(dotenv_path=env_path)
+    logger.info("Файл .env загружен.")
+else:
+    logger.warning("Файл .env не найден! Пытаюсь использовать переменные окружения.")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-# Список разрешенных пользователей из .env
 raw_allowed = os.getenv("ALLOWED_USERS", "")
 ALLOWED_USERS = [int(u.strip()) for u in raw_allowed.split(",") if u.strip().isdigit()]
+
+if not BOT_TOKEN:
+    logger.error("КРИТИЧЕСКАЯ ОШИБКА: BOT_TOKEN не найден!")
+    sys.exit(1)
+
+if not ALLOWED_USERS:
+    logger.error("КРИТИЧЕСКАЯ ОШИБКА: ALLOWED_USERS пуст! Кому слать сигналы?")
+    sys.exit(1)
 
 logger.info(f"Загружено ID пользователей: {len(ALLOWED_USERS)}")
 
@@ -62,7 +77,7 @@ last_signals = {}
 
 # Глобальное состояние бота для команды /status
 bot_state = {
-    "start_time": datetime.now(),
+    "start_time": get_now_msk(),
     "last_scan_time": None,
     "total_scans": 0,
     "signals_sent": 0,
@@ -108,7 +123,7 @@ class NewsFetcher:
                         except:
                             continue
                 bot_state["news_events"] = events
-                self.last_update = datetime.now()
+                self.last_update = get_now_msk()
                 logger.info(f"Загружено {len(events)} важных новостей.")
         except Exception as e:
             logger.error(f"Ошибка при загрузке новостей: {e}")
@@ -122,14 +137,11 @@ def is_news_time(symbol):
     
     # Извлекаем валюты из пары (например, EUR и USD из EURUSD)
     currencies = [symbol[:3], symbol[3:]]
-    now_utc = datetime.utcnow() # ForexFactory XML в UTC-4/5, это сложнее. 
-    # Временный костыль: считаем относительно текущего времени сервера
-    now = datetime.now() 
+    now = get_now_msk()
     
     for event in bot_state["news_events"]:
         if event["country"] in currencies:
             # Если новость в пределах 30 минут от текущего времени
-            # ВНИМАНИЕ: Тут могут быть проблемы с часовыми поясами сервера
             diff = abs((event["dt"] - now).total_seconds()) / 60
             if diff < 30:
                 return event["title"]
@@ -232,55 +244,62 @@ async def get_signal(symbol):
         logger.error(f"Ошибка при анализе {symbol}: {e}")
     return None
 
+# Семафор для ограничения параллельных запросов (безопасность + скорость)
+sem = asyncio.Semaphore(4)
+
+async def scan_symbol(symbol):
+    """Обертка для анализа одной пары с учетом семафора"""
+    async with sem:
+        try:
+            signal = await get_signal(symbol)
+            if signal == "RATE_LIMIT":
+                return "RATE_LIMIT"
+            return signal
+        except Exception as e:
+            logger.error(f"Ошибка при сканировании {symbol}: {e}")
+            return None
+        finally:
+            import random
+            await asyncio.sleep(random.uniform(0.5, 1.5))
+
 async def broadcast_signals():
     while True:
-        # Обновляем новости при каждом сканировании (или раз в час)
-        if news_fetcher.last_update is None or (datetime.now() - news_fetcher.last_update).total_seconds() > 3600:
+        if news_fetcher.last_update is None or (get_now_msk() - news_fetcher.last_update).total_seconds() > 3600:
             news_fetcher.fetch_news()
 
         bot_state["is_paused"] = False
-        bot_state["status_msg"] = "Сканирование рынка..."
-        bot_state["last_scan_time"] = datetime.now()
+        bot_state["status_msg"] = "Параллельное сканирование..."
+        bot_state["last_scan_time"] = get_now_msk()
         bot_state["total_scans"] += 1
         
-        # Собираем все сигналы за один цикл сканирования
-        current_cycle_signals = []
+        tasks = [scan_symbol(symbol) for symbol in SYMBOLS]
+        results = await asyncio.gather(*tasks)
         
-        for symbol in SYMBOLS:
-            signal = await get_signal(symbol)
-            
-            if signal == "RATE_LIMIT":
-                bot_state["is_paused"] = True
-                bot_state["status_msg"] = "Пауза из-за лимитов TradingView (429)"
-                logger.info("Пауза 5 минут из-за блокировки IP TradingView...")
-                await asyncio.sleep(300)
+        current_cycle_signals = []
+        hit_rate_limit = False
+        
+        for res in results:
+            if res == "RATE_LIMIT":
+                hit_rate_limit = True
                 break
-            
-            if signal == "NEWS_BLOCK":
-                # Просто пропускаем эту пару из-за новостей
-                continue
+            if res:
+                current_cycle_signals.append(res)
                 
-            if signal:
-                current_cycle_signals.append(signal)
+        if hit_rate_limit:
+            bot_state["is_paused"] = True
+            bot_state["status_msg"] = "Пауза из-за лимитов (429)"
+            logger.warning("ОБНАРУЖЕН 429! Уходим на перекур 10 минут...")
+            await asyncio.sleep(600)
+            continue
             
-            # Пауза между запросами к символам
-            await asyncio.sleep(2)
-            
-        # Теперь отправляем ВСЕ сигналы, которые прошли фильтры (по просьбе пользователя)
-        if current_cycle_signals and not bot_state["is_paused"]:
-            from datetime import timedelta
-            
+        if current_cycle_signals:
             for signal_data in current_cycle_signals:
                 symbol = signal_data['symbol']
                 rec_type = "📈 ВВЕРХ (BUY)" if signal_data['rec'] == "STRONG_BUY" else "📉 ВНИЗ (SELL)"
                 signal_key = f"{symbol}_{signal_data['rec']}"
                 
-                # Коррекция времени: +3 часа для МСК
-                now_local = datetime.now() + timedelta(hours=3)
-                
-                # Отправляем только если сигнал новый (или прошло более 5 минут)
-                if signal_key not in last_signals or (datetime.now() - last_signals[signal_key]).total_seconds() > 300:
-                    last_signals[signal_key] = datetime.now()
+                if signal_key not in last_signals or (get_now_msk() - last_signals[signal_key]).total_seconds() > 300:
+                    last_signals[signal_key] = get_now_msk()
                     
                     message_text = (
                         f"🚀 **НОВЫЙ СИГНАЛ: {symbol}**\n\n"
@@ -290,26 +309,19 @@ async def broadcast_signals():
                         f"🎯 Уверенность: **{signal_data['confidence']}%** ({signal_data['indicators']})\n"
                         f"📈 RSI: **{signal_data['rsi']}** | ADX: **{signal_data['adx']}**\n\n"
                         f"⏳ Экспирация: **1-2 минуты**\n"
-                        f"🕒 Время (МСК): {now_local.strftime('%H:%M:%S')}"
+                        f"🕒 Время (МСК): {get_now_msk().strftime('%H:%M:%S')}"
                     )
                     
-                    if ALLOWED_USERS:
-                        for user_id in ALLOWED_USERS:
-                            try:
-                                await bot.send_message(
-                                    chat_id=user_id,
-                                    text=message_text,
-                                    parse_mode=ParseMode.MARKDOWN
-                                )
-                                logger.info(f"Сигнал по {symbol} отправлен {user_id}")
-                            except Exception as e:
-                                logger.error(f"Ошибка отправки {user_id}: {e}")
-                        bot_state["signals_sent"] += 1
+                    for user_id in ALLOWED_USERS:
+                        try:
+                            await bot.send_message(chat_id=user_id, text=message_text, parse_mode=ParseMode.MARKDOWN)
+                            logger.info(f"Сигнал {symbol} отправлен {user_id}")
+                        except Exception as e:
+                            logger.error(f"Ошибка отправки {user_id}: {e}")
+                    bot_state["signals_sent"] += 1
             
-        # Пауза перед следующим полным циклом увеличена до 60 секунд
-        if not bot_state["is_paused"]:
-            bot_state["status_msg"] = "Ожидание следующего цикла..."
-            await asyncio.sleep(60)
+        bot_state["status_msg"] = "Ожидание (10 сек)..."
+        await asyncio.sleep(10)
 
 @dp.message()
 async def cmd_handler(message: types.Message):
@@ -319,7 +331,7 @@ async def cmd_handler(message: types.Message):
         return
 
     if message.text == "/status":
-        uptime = datetime.now() - bot_state["start_time"]
+        uptime = get_now_msk() - bot_state["start_time"]
         hours, remainder = divmod(uptime.seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
         
