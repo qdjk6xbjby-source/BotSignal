@@ -1,0 +1,3 @@
+tradingview-ta
+aiogram
+python-dotenv
