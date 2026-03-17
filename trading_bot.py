@@ -32,10 +32,8 @@ if not BOT_TOKEN:
     print("Ошибка: BOT_TOKEN не найден в .env!")
     exit(1)
 
-# Настройка сессии с длинными таймаутами для стабильности (120 секунд)
-session = AiohttpSession(
-    timeout=ClientTimeout(total=120, connect=30, sock_read=30, sock_connect=30)
-)
+# Настройка сессии с таймаутом 120 секунд для стабильности
+session = AiohttpSession(timeout=120.0)
 bot = Bot(
     token=BOT_TOKEN, 
     session=session,
