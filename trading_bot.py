@@ -245,14 +245,27 @@ async def get_signal(symbol):
     return None
 
 # Семафор для ограничения параллельных запросов (безопасность + скорость)
-sem = asyncio.Semaphore(4)
+# Снижаем до 2, так как 4 вызывало частые 429 ошибки
+sem = asyncio.Semaphore(2)
+
+# Глобальный флаг, чтобы остановить текущую пачку запросов при получении 429
+global_429_hit = False
 
 async def scan_symbol(symbol):
-    """Обертка для анализа одной пары с учетом семафора"""
+    """Обертка для анализа одной пары с учетом семафора и глобального флага 429"""
+    global global_429_hit
+    
+    if global_429_hit:
+        return None
+        
     async with sem:
+        if global_429_hit: # Повторная проверка после ожидания в семафоре
+            return None
+            
         try:
             signal = await get_signal(symbol)
             if signal == "RATE_LIMIT":
+                global_429_hit = True
                 return "RATE_LIMIT"
             return signal
         except Exception as e:
@@ -260,37 +273,39 @@ async def scan_symbol(symbol):
             return None
         finally:
             import random
-            await asyncio.sleep(random.uniform(0.5, 1.5))
+            # Чуть увеличим паузу для безопасности
+            await asyncio.sleep(random.uniform(1.0, 2.0))
 
 async def broadcast_signals():
+    global global_429_hit
     while True:
         if news_fetcher.last_update is None or (get_now_msk() - news_fetcher.last_update).total_seconds() > 3600:
             news_fetcher.fetch_news()
 
         bot_state["is_paused"] = False
-        bot_state["status_msg"] = "Параллельное сканирование..."
+        bot_state["status_msg"] = "Анализ рынка (Con:2)..."
         bot_state["last_scan_time"] = get_now_msk()
         bot_state["total_scans"] += 1
+        
+        # Сбрасываем флаг перед началом пачки
+        global_429_hit = False
         
         tasks = [scan_symbol(symbol) for symbol in SYMBOLS]
         results = await asyncio.gather(*tasks)
         
         current_cycle_signals = []
-        hit_rate_limit = False
+        hit_rate_limit = global_429_hit or any(res == "RATE_LIMIT" for res in results)
         
-        for res in results:
-            if res == "RATE_LIMIT":
-                hit_rate_limit = True
-                break
-            if res:
-                current_cycle_signals.append(res)
-                
         if hit_rate_limit:
             bot_state["is_paused"] = True
             bot_state["status_msg"] = "Пауза из-за лимитов (429)"
-            logger.warning("ОБНАРУЖЕН 429! Уходим на перекур 10 минут...")
+            logger.warning("ОБНАРУЖЕН 429! Весь цикл прерван. Спим 10 минут...")
             await asyncio.sleep(600)
             continue
+            
+        for res in results:
+            if res and res != "RATE_LIMIT":
+                current_cycle_signals.append(res)
             
         if current_cycle_signals:
             for signal_data in current_cycle_signals:
@@ -320,6 +335,7 @@ async def broadcast_signals():
                             logger.error(f"Ошибка отправки {user_id}: {e}")
                     bot_state["signals_sent"] += 1
             
+        # Пауза между ЦИКЛАМИ 10 секунд
         bot_state["status_msg"] = "Ожидание (10 сек)..."
         await asyncio.sleep(10)
 
