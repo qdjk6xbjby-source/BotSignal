@@ -20,30 +20,29 @@ logger = logging.getLogger(__name__)
 script_dir = os.path.dirname(os.path.abspath(__file__))
 env_path = os.path.join(script_dir, '.env')
 if os.path.exists(env_path):
-    load_dotenv(env_path)
+    load_dotenv(env_path, override=True)
 else:
-    load_dotenv() # Фолбэк на дефолт
+    load_dotenv() 
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Ищем ключ в разных возможных переменных
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 AI_ENABLED = os.getenv("AI_ENABLED", "False").lower() == "true"
 
 client = None
 if AI_ENABLED and GEMINI_API_KEY:
     try:
+        # ВАЖНО: прокидываем ключ явно в клиент
         client = genai.Client(api_key=GEMINI_API_KEY)
-        logger.info("Gemini AI (google-genai) успешно настроен.")
+        logger.info("Gemini AI успешно настроен.")
     except Exception as e:
         logger.error(f"Ошибка настройки Gemini: {e}")
         AI_ENABLED = False
 else:
     if not GEMINI_API_KEY:
-        logger.error("КРИТИЧЕСКАЯ ОШИБКА: GEMINI_API_KEY не найден в .env!")
+        logger.error(f"КРИТИЧЕСКАЯ ОШИБКА: Ключ не найден в {env_path}")
     logger.warning("Gemini AI отключен или отсутствует API ключ.")
 
 async def get_ai_trading_insight(symbol, signal_type, indicators, news_context="Нет важных новостей"):
-    """
-    Получает глубокий анализ от ИИ на основе текущих рыночных данных.
-    """
     if not AI_ENABLED or client is None:
         return None
 
@@ -86,13 +85,20 @@ async def get_ai_trading_insight(symbol, signal_type, indicators, news_context="
 
 if __name__ == "__main__":
     async def test():
-        print(f"Путь к .env: {env_path}")
-        print(f"Ключ найден: {'Да' if GEMINI_API_KEY else 'Нет'}")
-        if GEMINI_API_KEY:
-             print(f"Первые символы ключа: {GEMINI_API_KEY[:5]}...")
+        print(f"--- ДИАГНОСТИКА ---")
+        print(f"Папка скрипта: {script_dir}")
+        print(f"Файл .env существует: {os.path.exists(env_path)}")
+        print(f"GEMINI_API_KEY найден: {'Да' if os.getenv('GEMINI_API_KEY') else 'Нет'}")
+        print(f"GOOGLE_API_KEY найден: {'Да' if os.getenv('GOOGLE_API_KEY') else 'Нет'}")
+        print(f"AI_ENABLED: {AI_ENABLED}")
+        print(f"-------------------")
         
-        print("Запуск теста Gemini AI...")
+        if not GEMINI_API_KEY:
+            print("ОШИБКА: Ключ всё еще не виден! Проверьте содержимое .env")
+            return
+
+        print("Запуск теста запроса...")
         res = await get_ai_trading_insight("EURUSD", "📈 ВВЕРХ (BUY)", "RSI: 60, ADX: 25", "No news")
-        print(res)
+        print(f"\nОТВЕТ ИИ:\n{res}")
     
     asyncio.run(test())
