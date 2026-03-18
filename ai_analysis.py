@@ -16,8 +16,13 @@ if sys.platform == "win32":
 
 logger = logging.getLogger(__name__)
 
-# Загрузка переменных окружения
-load_dotenv()
+# Загрузка переменных окружения с использованием абсолютного пути
+script_dir = os.path.dirname(os.path.abspath(__file__))
+env_path = os.path.join(script_dir, '.env')
+if os.path.exists(env_path):
+    load_dotenv(env_path)
+else:
+    load_dotenv() # Фолбэк на дефолт
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 AI_ENABLED = os.getenv("AI_ENABLED", "False").lower() == "true"
@@ -31,6 +36,8 @@ if AI_ENABLED and GEMINI_API_KEY:
         logger.error(f"Ошибка настройки Gemini: {e}")
         AI_ENABLED = False
 else:
+    if not GEMINI_API_KEY:
+        logger.error("КРИТИЧЕСКАЯ ОШИБКА: GEMINI_API_KEY не найден в .env!")
     logger.warning("Gemini AI отключен или отсутствует API ключ.")
 
 async def get_ai_trading_insight(symbol, signal_type, indicators, news_context="Нет важных новостей"):
@@ -60,12 +67,7 @@ async def get_ai_trading_insight(symbol, signal_type, indicators, news_context="
     Сформулируй профессиональное мнение.
     """
 
-    # Список моделей для попытки (в порядке приоритета)
-    models_to_try = [
-        'gemini-2.0-flash', 
-        'gemini-flash-latest', 
-        'gemini-2.0-flash-lite'
-    ]
+    models_to_try = ['gemini-2.0-flash', 'gemini-flash-latest', 'gemini-2.0-flash-lite']
 
     for model_name in models_to_try:
         try:
@@ -77,19 +79,20 @@ async def get_ai_trading_insight(symbol, signal_type, indicators, news_context="
         except Exception as e:
             logger.warning(f"Ошибка с моделью {model_name}: {e}")
             if "429" in str(e):
-                await asyncio.sleep(2) # Небольшая пауза при лимите
+                await asyncio.sleep(2)
             continue
 
     return "⚠️ Анализ ИИ временно недоступен (лимиты API)."
 
 if __name__ == "__main__":
-    # Тестовый запуск
     async def test():
+        print(f"Путь к .env: {env_path}")
+        print(f"Ключ найден: {'Да' if GEMINI_API_KEY else 'Нет'}")
+        if GEMINI_API_KEY:
+             print(f"Первые символы ключа: {GEMINI_API_KEY[:5]}...")
+        
         print("Запуск теста Gemini AI...")
-        res = await get_ai_trading_insight("EURUSD", "📈 ВВЕРХ (BUY)", "RSI: 60, ADX: 25, H1 Trend: UP", "No important news")
-        if res:
-            print(res, flush=True)
-        else:
-            print("Анализ не получен (проверьте AI_ENABLED и API ключ).", flush=True)
+        res = await get_ai_trading_insight("EURUSD", "📈 ВВЕРХ (BUY)", "RSI: 60, ADX: 25", "No news")
+        print(res)
     
     asyncio.run(test())
