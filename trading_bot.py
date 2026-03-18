@@ -37,6 +37,7 @@ import pytz
 import csv
 import io
 import httpx
+import xml.etree.ElementTree as ET
 
 # Сентимент-кэш
 GLOBAL_SENTIMENT = {
@@ -189,10 +190,10 @@ class NewsFetcher:
         self.url = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
         self.last_update = None
         
-    def fetch_news(self):
+    async def fetch_news(self):
         try:
             logger.info("Обновление экономического календаря...")
-            response = requests.get(self.url, timeout=15)
+            response = await asyncio.to_thread(requests.get, self.url, timeout=15)
             if response.status_code == 200:
                 root = ET.fromstring(response.content)
                 events = []
