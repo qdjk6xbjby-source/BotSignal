@@ -11,6 +11,20 @@ from aiogram.client.bot import DefaultBotProperties
 from aiohttp import ClientTimeout
 from tradingview_ta import TA_Handler, Interval
 
+# --- Секция авто-обновления для хостинга (Bothost.ru и др.) ---
+try:
+    import pydantic
+    from aiogram import __version__ as aiogram_v
+    if int(pydantic.__version__.split('.')[0]) < 2:
+        raise ImportError
+except (ImportError, AttributeError):
+    print("🔧 [Bootloader] Установка/обновление зависимостей на сервере...")
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pydantic>=2.0.0", "aiogram>=3.0.0", "httpx", "tradingview-ta", "python-dotenv", "pytz", "requests"])
+    print("✅ [Bootloader] Библиотеки обновлены. Перезапуск бота...")
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+# -----------------------------------------------------------
+
 # Попытка исправить кодировку в консоли Windows
 if sys.platform == "win32":
     import io

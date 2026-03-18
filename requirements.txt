@@ -2,5 +2,6 @@ tradingview-ta
 aiogram
 python-dotenv
 requests
-investiny
+pydantic>=2.0.0
 pytz
+httpx
