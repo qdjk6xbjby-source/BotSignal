@@ -533,8 +533,8 @@ async def broadcast_signals():
             if "RATE_LIMIT" in chunk_results:
                 bot_state["is_paused"] = True
                 bot_state["status_msg"] = "Пауза (429)"
-                logger.warning("ОБНАРУЖЕН 429! СТОП. Уходим на перерыв 15 минут...")
-                await asyncio.sleep(900)
+                logger.warning("ОБНАРУЖЕН 429! СТОП. Уходим на перерыв 7 минут...")
+                await asyncio.sleep(420)
                 break
             await asyncio.sleep(1.0) # Уменьшили задержку между чанками
             
@@ -570,7 +570,7 @@ async def cmd_handler(message: types.Message):
     elif message.text == "/start":
         await message.answer(
             "👋 **Привет! Я Твой Торговый Помощник.**\n\n"
-            "Я анализирую рынок через TradingView (26 индикаторов) на таймфрейме 1 минута.\n\n"
+            "Я анализирую рынок по стратегии **H1 (Тренд) + M15 (Сигнал) + M5 (Вход)**.\n\n"
             "📍 Просто жди сигналов или нажми /status для проверки моей работы."
         )
 
