@@ -20,7 +20,7 @@ try:
 except (ImportError, AttributeError):
     print("🔧 [Bootloader] Установка/обновление зависимостей на сервере...")
     import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pydantic>=2.0.0", "aiogram>=3.0.0", "httpx", "tradingview-ta", "python-dotenv", "pytz", "requests"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pydantic>=2.0.0", "aiogram>=3.0.0", "google-genai", "httpx", "tradingview-ta", "python-dotenv", "pytz", "requests"])
     print("✅ [Bootloader] Библиотеки обновлены. Перезапуск бота...")
     os.execv(sys.executable, [sys.executable] + sys.argv)
 # -----------------------------------------------------------
@@ -38,6 +38,7 @@ import csv
 import io
 import httpx
 import xml.etree.ElementTree as ET
+from ai_analysis import get_ai_trading_insight
 
 # Сентимент-кэш
 GLOBAL_SENTIMENT = {
@@ -511,6 +512,20 @@ async def broadcast_signals():
                             f"📈 RSI: **{signal_data['rsi']}** | ADX: **{signal_data['adx']}**\n\n"
                             f"🕒 Время (МСК): {get_now_msk().strftime('%H:%M:%S')}"
                         )
+                        
+                        # Добавляем анализ ИИ
+                        indicators_summary = f"RSI: {signal_data['rsi']}, ADX: {signal_data['adx']}, VIX: {signal_data['vix']}, Strategy: {signal_data['indicators']}"
+                        news_block = is_news_time(symbol) or "Нет важных новостей"
+                        
+                        ai_insight = await get_ai_trading_insight(
+                            symbol=symbol,
+                            signal_type=rec_type,
+                            indicators=indicators_summary,
+                            news_context=news_block
+                        )
+                        
+                        if ai_insight:
+                            message_text += f"\n\n{ai_insight}"
                         
                         for user_id in ALLOWED_USERS:
                             try:
