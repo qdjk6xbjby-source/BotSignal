@@ -14,7 +14,10 @@ source venv/bin/activate
 # 3. Установка зависимостей
 pip install -r requirements.txt
 
-# 4. Создание сервиса для автозапуска (опционально)
+# 4. Чтобы бот работал 24/7, используйте systemd.
+# Шаблон сервиса доступен в deployment_guide.md
+
 echo "--- Установка завершена! ---"
-echo "Чтобы запустить бота, введите:"
-echo "source venv/bin/activate && python3 trading_bot.py"
+echo "1. Настройте .env файл."
+echo "2. Запустите бота для теста: source venv/bin/activate && python3 trading_bot.py"
+echo "3. Настройте systemd для работы 24/7 (см. deployment_guide.md)."

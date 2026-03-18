@@ -2,3 +2,5 @@ tradingview-ta
 aiogram
 python-dotenv
 requests
+investiny
+pytz

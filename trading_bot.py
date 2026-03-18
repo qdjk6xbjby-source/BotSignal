@@ -18,8 +18,30 @@ if sys.platform == "win32":
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 import requests
-import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
+import pytz
+import csv
+import io
+import httpx
+
+# Сентимент-кэш
+GLOBAL_SENTIMENT = {
+    "vix": "NEUTRAL",
+    "trends": "NEUTRAL",
+    "retail": {}
+}
+
+# Маппинг символов для отчетов COT...
+COT_MAPPING = {
+    "EUR": "EURO FX",
+    "GBP": "BRITISH POUND",
+    "JPY": "JAPANESE YEN",
+    "AUD": "AUSTRALIAN DOLLAR",
+    "CAD": "CANADIAN DOLLAR",
+    "NZD": "NEW ZEALAND DOLLAR",
+    "CHF": "SWISS FRANC",
+    "MXN": "MEXICAN PESO"
+}
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -83,8 +105,70 @@ bot_state = {
     "signals_sent": 0,
     "is_paused": False,
     "status_msg": "Запуск...",
-    "news_events": []  # Список важных новостей
+    "news_events": [],  # Список важных новостей
+    "cot_data": {}      # Данные COT отчетов
 }
+
+class COTFetcher:
+    def __init__(self):
+        self.url = "https://www.cftc.gov/dea/newcot/deafut.txt"
+        self.last_update = None
+        
+    async def update_cot(self):
+        try:
+            logger.info("Обновление COT отчетов (CFTC)...")
+            response = await asyncio.to_thread(requests.get, self.url, timeout=15)
+            if response.status_code == 200:
+                content = response.text
+                f = io.StringIO(content)
+                reader = csv.reader(f)
+                cot_results = {}
+                for row in reader:
+                    if not row: continue
+                    market_name = row[0].strip()
+                    # Проверяем, есть ли этот рынок в нашем маппинге
+                    for key, val in COT_MAPPING.items():
+                        if val in market_name:
+                            try:
+                                long_pos = int(row[8].strip())
+                                short_pos = int(row[9].strip())
+                                # Сентимент: (Long - Short) / (Long + Short)
+                                sentiment = (long_pos - short_pos) / (long_pos + short_pos) if (long_pos + short_pos) > 0 else 0
+                                cot_results[key] = {
+                                    "sentiment": round(sentiment, 4),
+                                    "long": long_pos,
+                                    "short": short_pos
+                                }
+                            except (ValueError, IndexError):
+                                continue
+                bot_state["cot_data"] = cot_results
+                self.last_update = get_now_msk()
+                logger.info(f"Загружены данные COT для {len(cot_results)} валют.")
+        except Exception as e:
+            logger.error(f"Ошибка при загрузке COT: {e}")
+
+cot_fetcher = COTFetcher()
+
+def is_market_active():
+    """Проверка торговых сессий (UTC)"""
+    now = datetime.utcnow().time()
+    # Лондон: 08:00 - 16:00 UTC
+    # Нью-Йорк: 13:00 - 21:00 UTC
+    # Мы разрешаем торговлю с 07:00 (пре-маркет Лондона) до 22:00 UTC
+    start_time = time(7, 0)
+    end_time = time(22, 0)
+    
+    # Пятница вечер и выходные (Форекс закрыт)
+    now_dt = datetime.utcnow()
+    if now_dt.weekday() == 4 and now_dt.hour > 21: # Пятница после 21:00 UTC
+        return False, "Рынок закрывается (Пятница)"
+    if now_dt.weekday() > 4: # Суббота, Воскресенье
+        return False, "Выходные (Рынок закрыт)"
+        
+    if start_time <= now <= end_time:
+        return True, "Активная сессия"
+    else:
+        return False, "Сессия закрыта (Ночь)"
 
 class NewsFetcher:
     def __init__(self):
@@ -147,166 +231,298 @@ def is_news_time(symbol):
                 return event["title"]
     return False
 
+async def get_vix_sentiment():
+    """Получает индекс страха VIX с TradingView"""
+    global GLOBAL_SENTIMENT
+    try:
+        handler = TA_Handler(
+            symbol="VIX",
+            screener="cfd",
+            exchange="CBOE-FX",
+            interval=Interval.INTERVAL_1_HOUR,
+            timeout=10
+        )
+        analysis = await asyncio.to_thread(handler.get_analysis)
+        price = analysis.indicators.get("close")
+        if price > 25:
+            sent = "EXTREME_FEAR"
+        elif price > 20:
+            sent = "FEAR"
+        elif price < 15:
+            sent = "GREED"
+        else:
+            sent = "NEUTRAL"
+        GLOBAL_SENTIMENT["vix"] = sent
+        logger.info(f"VIX: {price} ({sent})")
+    except Exception as e:
+        logger.debug(f"Ошибка получения VIX: {e}")
+
+async def get_trends_sentiment():
+    """Получает индекс страха и жадности (прокси для Google Trends/Сентимента)"""
+    global GLOBAL_SENTIMENT
+    try:
+        # Используем открытый API Alternative.me для индекса страха и жадности
+        async with httpx.AsyncClient() as client:
+            r = await client.get("https://api.alternative.me/fng/?limit=1", timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                value = int(data['data'][0]['value'])
+                classify = data['data'][0]['value_classification']
+                GLOBAL_SENTIMENT["trends"] = classify.upper().replace(" ", "_")
+                logger.info(f"Sentiment (F&G): {value} ({classify})")
+    except Exception as e:
+        logger.debug(f"Ошибка получения Sentiment: {e}")
+
+async def get_retail_sentiment():
+    """Заглушка для Retail Sentiment (DailyFX)"""
+    # В реальности тут был бы скрапер DailyFX, для стабильности пока возвращаем нейтраль
+    GLOBAL_SENTIMENT["retail"] = {}
+
+async def update_macro_sentiment():
+    """Периодическое обновление макро-сентимента"""
+    await get_vix_sentiment()
+    await get_trends_sentiment()
+    await get_retail_sentiment()
+
+async def get_tradingview_summary(symbol, interval):
+    """Получает техническое резюме с TradingView для заданного интервала"""
+    try:
+        handler = TA_Handler(
+            symbol=symbol,
+            screener="forex",
+            exchange="FX_IDC",
+            interval=interval,
+            timeout=10
+        )
+        analysis = await asyncio.to_thread(handler.get_analysis)
+        return analysis.summary.get('RECOMMENDATION', 'NEUTRAL')
+    except Exception as e:
+        logger.debug(f"Ошибка TradingView ({interval}) для {symbol}: {e}")
+        return "ERROR"
+
 async def get_signal(symbol):
     try:
-        # 0. Проверка новостей (НОВОЕ)
+        # 0. Проверка сессии
+        active, reason = is_market_active()
+        if not active:
+            logger.info(f"Пропуск {symbol}: {reason}")
+            return None
+
+        # 0.1 Проверка новостей
         news_title = is_news_time(symbol)
         if news_title:
             logger.info(f"Сигнал по {symbol} отменен: важная новость ({news_title})")
             return "NEWS_BLOCK"
 
-        # 1. Анализ на 1М (локальный сигнал)
-        handler_1m = TA_Handler(
+        # 0. Проверка VIX (Macro Fear)
+        vix = GLOBAL_SENTIMENT.get("vix")
+        
+        # 1. Анализ Трендов (H1)
+        handler_h1 = TA_Handler(
             symbol=symbol,
             screener="forex",
             exchange="FX_IDC",
-            interval=Interval.INTERVAL_1_MINUTE,
+            interval=Interval.INTERVAL_1_HOUR,
             timeout=10
         )
-        analysis_1m = await asyncio.to_thread(handler_1m.get_analysis)
-        sum_1m = analysis_1m.summary
-        rec_1m = sum_1m['RECOMMENDATION']
+        analysis_h1 = await asyncio.to_thread(handler_h1.get_analysis)
+        rec_h1 = analysis_h1.summary.get('RECOMMENDATION')
         
-        # Базовая проверка на силу сигнала 1М
-        if rec_1m not in ["STRONG_BUY", "STRONG_SELL"]:
-            return None
-            
-        score_1m = sum_1m['BUY'] if rec_1m == "STRONG_BUY" else sum_1m['SELL']
-        conf_1m = int((score_1m / 26) * 100)
-        
-        if conf_1m < 62:
+        # Тренд должен быть сильным
+        if rec_h1 not in ["STRONG_BUY", "STRONG_SELL"]:
             return None
 
-        # 2. Анализ на 5М (подтверждение тренда - MTF)
-        handler_5m = TA_Handler(
+        # 2. Анализ Сигнала (M15)
+        handler_m15 = TA_Handler(
+            symbol=symbol,
+            screener="forex",
+            exchange="FX_IDC",
+            interval=Interval.INTERVAL_15_MINUTES,
+            timeout=10
+        )
+        analysis_m15 = await asyncio.to_thread(handler_m15.get_analysis)
+        rec_m15 = analysis_m15.summary.get('RECOMMENDATION')
+        
+        if rec_h1 == "STRONG_BUY" and rec_m15 not in ["BUY", "STRONG_BUY"]:
+            return None
+        if rec_h1 == "STRONG_SELL" and rec_m15 not in ["SELL", "STRONG_SELL"]:
+            return None
+
+        # 3. Анализ точки входа (M5)
+        handler_m5 = TA_Handler(
             symbol=symbol,
             screener="forex",
             exchange="FX_IDC",
             interval=Interval.INTERVAL_5_MINUTES,
             timeout=10
         )
-        analysis_5m = await asyncio.to_thread(handler_5m.get_analysis)
-        sum_5m = analysis_5m.summary
-        rec_5m = sum_5m['RECOMMENDATION']
+        analysis_m5 = await asyncio.to_thread(handler_m5.get_analysis)
+        rec_m5 = analysis_m5.summary.get('RECOMMENDATION')
         
-        # Проверка соответствия трендов
-        if rec_1m == "STRONG_BUY" and rec_5m not in ["BUY", "STRONG_BUY"]:
+        # Подтверждение направления
+        if rec_h1 == "STRONG_BUY" and rec_m5 not in ["BUY", "STRONG_BUY"]:
             return None
-        if rec_1m == "STRONG_SELL" and rec_5m not in ["SELL", "STRONG_SELL"]:
+        if rec_h1 == "STRONG_SELL" and rec_m5 not in ["SELL", "STRONG_SELL"]:
             return None
 
-        # 3. Фильтр по уровням Pivot Points (НОВОЕ)
-        current_price = analysis_1m.indicators.get("close")
-        # Берем классические Pivot Points
-        r1 = analysis_1m.indicators.get("Pivot.M.Classic.R1")
-        s1 = analysis_1m.indicators.get("Pivot.M.Classic.S1")
+        # 5. Фильтр VIX и Trends (Риск-офф)
+        trends = GLOBAL_SENTIMENT.get("trends", "NEUTRAL")
         
-        # 5 пунктов для большинства пар (0.0005 для EURUSD, 0.05 для USDJPY)
-        pip_value = 0.01 if "JPY" in symbol else 0.0001
-        threshold = 5 * pip_value
-
-        if rec_1m == "STRONG_BUY" and r1:
-            if r1 - current_price < threshold:
-                logger.info(f"Сигнал BUY {symbol} отменен: слишком близко к уровню R1")
+        # Если на рынке экстремальный страх (VIX или Trends)
+        if vix in ["FEAR", "EXTREME_FEAR"] or "FEAR" in trends:
+            if any(x in symbol for x in ["AUD", "GBP", "EUR"]) and "BUY" in rec_h1:
+                logger.info(f"Сигнал {symbol} (BUY) отменен: Паника на рынках (VIX/Trends)")
                 return None
         
-        if rec_1m == "STRONG_SELL" and s1:
-            if current_price - s1 < threshold:
-                logger.info(f"Сигнал SELL {symbol} отменен: слишком близко к уровню S1")
+        # Если на рынке экстремальная жадность - риск коррекции
+        if "GREED" in trends and vix == "GREED":
+            logger.info(f"Сигнал {symbol} отменен: Экстремальная жадность (риск разворота)")
+            return None
+
+        # 4. Фильтр по полосам Боллинджера (и волатильность) на М15
+        bb_upper = analysis_m15.indicators.get("BB.upper")
+        bb_lower = analysis_m15.indicators.get("BB.lower")
+        rsi = analysis_m15.indicators.get("RSI")
+        adx = analysis_m15.indicators.get("ADX")
+        current_price = analysis_m15.indicators.get("close")
+
+        if bb_upper and bb_lower:
+            bb_width = bb_upper - bb_lower
+            # Фильтр волатильности (если канал слишком узкий - рынок спит)
+            if bb_width / current_price < 0.0001: # Пример порога 0.01%
+                logger.info(f"Сигнал {symbol} отменен: слишком низкая волатильность (флет)")
                 return None
 
-        # 4. Дополнительные фильтры (RSI + ADX)
-        rsi = analysis_1m.indicators.get("RSI")
-        adx = analysis_1m.indicators.get("ADX")
-        
+            if rec_h1 == "STRONG_BUY" and (bb_upper - current_price) < bb_width * 0.1:
+                logger.info(f"Сигнал {symbol} отменен: цена слишком близко к верхней полосе")
+                return None
+            if rec_h1 == "STRONG_SELL" and (current_price - bb_lower) < bb_width * 0.1:
+                logger.info(f"Сигнал {symbol} отменен: цена слишком близко к нижней полосе")
+                return None
+
+        # 5. EMA Crossover подтверждение (на M5)
+        ema20 = analysis_m5.indicators.get("EMA20")
+        ema50 = analysis_m5.indicators.get("EMA50")
+        if ema20 and ema50:
+            if rec_h1 == "STRONG_BUY" and ema20 < ema50:
+                logger.info(f"Сигнал {symbol} (BUY) отменен: EMA20 < EMA50 на M5")
+                return None
+            if rec_h1 == "STRONG_SELL" and ema20 > ema50:
+                logger.info(f"Сигнал {symbol} (SELL) отменен: EMA20 > EMA50 на M5")
+                return None
+
+        # 6. RSI и ADX фильтры (на M15)
         if rsi:
-            if rec_1m == "STRONG_BUY" and rsi > 70:
+            if rec_h1 == "STRONG_BUY" and rsi > 70:
+                logger.info(f"Сигнал {symbol} (BUY) отменен: RSI > 70 на M15 (перекупленность)")
                 return None
-            if rec_1m == "STRONG_SELL" and rsi < 30:
+            if rec_h1 == "STRONG_SELL" and rsi < 30:
+                logger.info(f"Сигнал {symbol} (SELL) отменен: RSI < 30 на M15 (перепроданность)")
                 return None
-                
+        
         if adx and adx < 20:
+            logger.info(f"Сигнал {symbol} отменен: ADX < 20 на M15 (слабый тренд)")
             return None
 
+        # 5. Сентимент COT
+        cot_status = get_cot_sentiment(symbol)
+        if cot_status == "REJECT":
+            logger.info(f"Сигнал {symbol} отклонен по отчету COT")
+            return None
+
+        rec_type = "Long/BUY" if "BUY" in rec_h1 else "Short/SELL"
+        
         return {
-            "symbol": symbol,
-            "rec": rec_1m,
-            "confidence": conf_1m,
-            "indicators": f"{score_1m}/26",
+            "type": rec_type,
+            "confidence": 85, # Базовая уверенность для MTF
+            "indicators": f"H1+M15+M5",
             "rsi": round(rsi, 2) if rsi else "N/A",
-            "adx": round(adx, 2) if adx else "N/A"
+            "adx": round(adx, 2) if adx else "N/A",
+            "vix": vix,
+            "cot": cot_status
         }
 
     except Exception as e:
         if "429" in str(e):
-            logger.warning(f"Превышен лимит запросов (429) при анализе {symbol}. Нужно подождать.")
             return "RATE_LIMIT"
         logger.error(f"Ошибка при анализе {symbol}: {e}")
     return None
 
 async def broadcast_signals():
-    """Главный цикл: последовательное сканирование с большими паузами (Super-Stable Mode)"""
-    import random
+    """Главный цикл: параллельное сканирование"""
+    last_cot_update = None
+    last_news_update = None
     while True:
-        # Обновляем новости раз в час
-        if news_fetcher.last_update is None or (get_now_msk() - news_fetcher.last_update).total_seconds() > 3600:
-            news_fetcher.fetch_news()
+        now = get_now_msk()
+        # Периодические задачи
+        if last_cot_update is None or (now - last_cot_update).total_seconds() > 43200:
+            await cot_fetcher.update_cot()
+            await update_macro_sentiment()
+            last_cot_update = now
+        
+        if last_news_update is None or (now - last_news_update).total_seconds() > 3600:
+            await news_fetcher.fetch_news()
+            last_news_update = now
 
         bot_state["is_paused"] = False
-        bot_state["status_msg"] = "Стабильное сканирование..."
+        bot_state["status_msg"] = "Сканирование..."
         bot_state["last_scan_time"] = get_now_msk()
         bot_state["total_scans"] += 1
         
         logger.info(f"--- НАЧАЛО ЦИКЛА СКАНИРОВАНИЯ #{bot_state['total_scans']} ---")
         
-        for symbol in SYMBOLS:
+        async def process_symbol(symbol):
             try:
-                # Анализируем одну пару
                 signal_data = await get_signal(symbol)
                 
                 if signal_data == "RATE_LIMIT":
-                    bot_state["is_paused"] = True
-                    bot_state["status_msg"] = "Пауза (429)"
-                    logger.warning("ОБНАРУЖЕН 429! СТОП. Уходим на перерыв 15 минут...")
-                    await asyncio.sleep(900)
-                    break # Прерываем текущий цикл
+                    return "RATE_LIMIT"
                 
                 if isinstance(signal_data, dict):
-                    rec_type = "📈 ВВЕРХ (BUY)" if signal_data['rec'] == "STRONG_BUY" else "📉 ВНИЗ (SELL)"
-                    signal_key = f"{symbol}_{signal_data['rec']}"
+                    rec_type = "📈 ВВЕРХ (BUY)" if "BUY" in signal_data['type'] else "📉 ВНИЗ (SELL)"
+                    signal_key = f"{symbol}_{signal_data['type']}"
                     
-                    # Защита от спама (повтор не чаще чем раз в 5 минут)
                     if signal_key not in last_signals or (get_now_msk() - last_signals[signal_key]).total_seconds() > 300:
                         last_signals[signal_key] = get_now_msk()
                         
                         message_text = (
-                            f"🚀 **НОВЫЙ СИГНАЛ: {symbol}**\n\n"
-                            f"⚠️ **ТОЛЬКО РЕАЛЬНЫЙ РЫНОК (НЕ OTC)**\n\n"
-                            f"⏱ Таймфрейм: **1М + 5М (Подтверждено)**\n"
+                            f"🚀 **ИНТРАДЕЙ СИГНАЛ: {symbol}**\n\n"
                             f"🔔 Рекомендация: **{rec_type}**\n"
-                            f"🎯 Уверенность: **{signal_data['confidence']}%** ({signal_data['indicators']})\n"
+                            f"📊 Стратегия: **H1 (Trend) + M15 + M5**\n"
+                            f"⏳ Статус: **Вход подтвержден**\n"
+                            f"🏛 COT Sentiment: **{signal_data['cot']}**\n"
+                            f"📉 VIX (Fear): **{signal_data['vix']}**\n"
+                            f"📊 Trends (F&G): **{GLOBAL_SENTIMENT.get('trends')}**\n"
                             f"📈 RSI: **{signal_data['rsi']}** | ADX: **{signal_data['adx']}**\n\n"
-                            f"⏳ Экспирация: **1-2 минуты**\n"
                             f"🕒 Время (МСК): {get_now_msk().strftime('%H:%M:%S')}"
                         )
                         
                         for user_id in ALLOWED_USERS:
                             try:
                                 await bot.send_message(chat_id=user_id, text=message_text, parse_mode=ParseMode.MARKDOWN)
-                                logger.info(f"Сигнал {symbol} отправлен {user_id}")
                             except Exception as e:
                                 logger.error(f"Ошибка отправки {user_id}: {e}")
                         bot_state["signals_sent"] += 1
-                
-                # КРИТИЧЕСКИ ВАЖНО: Пауза между ПАРАМИ (3-5 секунд), чтобы имитировать человека
-                await asyncio.sleep(random.uniform(3.0, 5.0))
-                
+                return None
             except Exception as e:
                 logger.error(f"Ошибка при обработке {symbol}: {e}")
-                await asyncio.sleep(5)
+                return None
+
+        chunk_size = 4 # Увеличили размер чанка для скорости
+        market_results = []
+        for i in range(0, len(SYMBOLS), chunk_size):
+            chunk = SYMBOLS[i:i + chunk_size]
+            chunk_results = await asyncio.gather(*[process_symbol(s) for s in chunk])
+            market_results.extend(chunk_results)
             
-        # Пауза между полными ЦИКЛАМИ рынка (60 секунд)
-        # Это даст IP «отдых» и снизит вероятность детекции как бота
+            if "RATE_LIMIT" in chunk_results:
+                bot_state["is_paused"] = True
+                bot_state["status_msg"] = "Пауза (429)"
+                logger.warning("ОБНАРУЖЕН 429! СТОП. Уходим на перерыв 15 минут...")
+                await asyncio.sleep(900)
+                break
+            await asyncio.sleep(1.0) # Уменьшили задержку между чанками
+            
         logger.info(f"--- ЦИКЛ ЗАВЕРШЕН. Отдых 60 секунд. ---")
         bot_state["status_msg"] = "Отдых (60 сек)..."
         await asyncio.sleep(60)
