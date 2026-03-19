@@ -16,31 +16,41 @@ if sys.platform == "win32":
 
 logger = logging.getLogger(__name__)
 
-# Загрузка переменных окружения с использованием абсолютного пути
+# Загрузка переменных окружения
 script_dir = os.path.dirname(os.path.abspath(__file__))
 env_path = os.path.join(script_dir, '.env')
+
 if os.path.exists(env_path):
     load_dotenv(env_path, override=True)
 else:
-    load_dotenv() 
+    load_dotenv()
 
-# Ищем ключ в разных возможных переменных
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+# Ищем ключ (сначала в GEMINI_API_KEY, потом в GOOGLE_API_KEY)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") 
+if not GEMINI_API_KEY:
+    GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY")
+
 AI_ENABLED = os.getenv("AI_ENABLED", "False").lower() == "true"
 
+# Настройка клиента
 client = None
-if AI_ENABLED and GEMINI_API_KEY:
-    try:
-        # ВАЖНО: прокидываем ключ явно в клиент
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        logger.info("Gemini AI успешно настроен.")
-    except Exception as e:
-        logger.error(f"Ошибка настройки Gemini: {e}")
+if AI_ENABLED:
+    if GEMINI_API_KEY:
+        try:
+            # Маскированный вывод ключа для диагностики
+            masked_key = f"{GEMINI_API_KEY[:4]}...{GEMINI_API_KEY[-4:]}"
+            logger.info(f"Настройка Gemini (Ключ: {masked_key})")
+            
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            logger.info("Gemini AI клиент успешно создан.")
+        except Exception as e:
+            logger.error(f"Ошибка при инициализации Gemini: {e}")
+            AI_ENABLED = False
+    else:
+        logger.error(f"КРИТИЧЕСКАЯ ОШИБКА: API ключ не найден в окружении (проверьте {env_path})")
         AI_ENABLED = False
 else:
-    if not GEMINI_API_KEY:
-        logger.error(f"КРИТИЧЕСКАЯ ОШИБКА: Ключ не найден в {env_path}")
-    logger.warning("Gemini AI отключен или отсутствует API ключ.")
+    logger.warning("Gemini AI отключен в настройках (AI_ENABLED=False).")
 
 async def get_ai_trading_insight(symbol, signal_type, indicators, news_context="Нет важных новостей"):
     if not AI_ENABLED or client is None:
