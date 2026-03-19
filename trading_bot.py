@@ -459,7 +459,7 @@ async def get_signal(symbol):
                 exchange="FX_IDC",
                 interval=Interval.INTERVAL_1_HOUR,
                 timeout=10,
-                proxy=proxy
+                proxies={'http': proxy, 'https': proxy} if proxy else None
             )
             analysis_h1 = await asyncio.to_thread(handler_h1.get_analysis)
             rec_h1 = analysis_h1.summary.get('RECOMMENDATION')
@@ -478,7 +478,7 @@ async def get_signal(symbol):
             exchange="FX_IDC",
             interval=Interval.INTERVAL_15_MINUTES,
             timeout=10,
-            proxy=proxy
+            proxies={'http': proxy, 'https': proxy} if proxy else None
         )
         analysis_m15 = await asyncio.to_thread(handler_m15.get_analysis)
         rec_m15 = analysis_m15.summary.get('RECOMMENDATION')
@@ -496,7 +496,7 @@ async def get_signal(symbol):
             exchange="FX_IDC",
             interval=Interval.INTERVAL_5_MINUTES,
             timeout=10,
-            proxy=proxy
+            proxies={'http': proxy, 'https': proxy} if proxy else None
         )
         analysis_m5 = await asyncio.to_thread(handler_m5.get_analysis)
         rec_m5 = analysis_m5.summary.get('RECOMMENDATION')
