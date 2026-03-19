@@ -1,9 +1,27 @@
 import os
-import logging
-import asyncio
 import sys
-from google import genai
+import asyncio
+import logging
 from dotenv import load_dotenv
+
+# --- ШАГ 1: ЗАГРУЗКА ОКРУЖЕНИЯ (ДО ВСЕХ ИМПОРТОВ) ---
+script_dir = os.path.dirname(os.path.abspath(__file__))
+env_path = os.path.join(script_dir, '.env')
+
+if os.path.exists(env_path):
+    load_dotenv(env_path, override=True)
+else:
+    load_dotenv()
+
+# Ищем ключ
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+
+# ПРИНУДИТЕЛЬНО ставим ключ в переменные системы, так как библиотеки Google ищут его там
+if GEMINI_API_KEY:
+    os.environ["GOOGLE_API_KEY"] = GEMINI_API_KEY
+
+# --- ШАГ 2: ИМПОРТ БИБЛИОТЕК ---
+from google import genai
 
 # Попытка исправить кодировку для Windows консоли
 if sys.platform == "win32":
@@ -16,20 +34,6 @@ if sys.platform == "win32":
 
 logger = logging.getLogger(__name__)
 
-# Загрузка переменных окружения
-script_dir = os.path.dirname(os.path.abspath(__file__))
-env_path = os.path.join(script_dir, '.env')
-
-if os.path.exists(env_path):
-    load_dotenv(env_path, override=True)
-else:
-    load_dotenv()
-
-# Ищем ключ (сначала в GEMINI_API_KEY, потом в GOOGLE_API_KEY)
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") 
-if not GEMINI_API_KEY:
-    GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY")
-
 AI_ENABLED = os.getenv("AI_ENABLED", "False").lower() == "true"
 
 # Настройка клиента
@@ -39,7 +43,7 @@ if AI_ENABLED:
         try:
             # Маскированный вывод ключа для диагностики
             masked_key = f"{GEMINI_API_KEY[:4]}...{GEMINI_API_KEY[-4:]}"
-            logger.info(f"Настройка Gemini (Ключ: {masked_key})")
+            logger.info(f"Настройка Gemini (Ключ: {masked_key}, Путь: {env_path})")
             
             client = genai.Client(api_key=GEMINI_API_KEY)
             logger.info("Gemini AI клиент успешно создан.")
