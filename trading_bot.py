@@ -13,6 +13,10 @@ from tradingview_ta import TA_Handler, Interval
 import random
 import time as time_sync
 
+# Настройка логирования
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 # --- Секция авто-обновления для хостинга (Bothost.ru и др.) ---
 try:
     import pydantic
@@ -168,9 +172,7 @@ COT_MAPPING = {
     "MXN": "MEXICAN PESO"
 }
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# Функция для получения времени в МСК (UTC+3)
 
 # Функция для получения времени в МСК (UTC+3)
 def get_now_msk():
