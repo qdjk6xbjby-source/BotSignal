@@ -26,7 +26,7 @@ try:
 except (ImportError, AttributeError):
     print("🔧 [Bootloader] Установка/обновление зависимостей на сервере...")
     import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pydantic>=2.0.0", "aiogram>=3.0.0", "google-genai", "httpx", "tradingview-ta", "python-dotenv", "pytz", "requests"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pydantic>=2.0.0", "aiogram>=3.0.0", "google-genai", "httpx", "tradingview-ta", "python-dotenv", "pytz", "requests", "PySocks"])
     print("✅ [Bootloader] Библиотеки обновлены. Перезапуск бота...")
     os.execv(sys.executable, [sys.executable] + sys.argv)
 # -----------------------------------------------------------
