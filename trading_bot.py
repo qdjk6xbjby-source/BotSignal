@@ -466,8 +466,8 @@ async def get_signal(symbol):
             h1_cache[symbol] = (rec_h1, now_ts)
             logger.info(f"Обновлен тренд H1 для {symbol}: {rec_h1} (через {proxy or 'DIRECT'})")
         
-        # Тренд должен быть сильным
-        if rec_h1 not in ["STRONG_BUY", "STRONG_SELL"]:
+        # Тренд может быть просто BUY или SELL (не обязательно STRONG)
+        if rec_h1 not in ["BUY", "STRONG_BUY", "SELL", "STRONG_SELL"]:
             return None
 
         # 2. Анализ Сигнала (M15)
@@ -483,9 +483,9 @@ async def get_signal(symbol):
         analysis_m15 = await asyncio.to_thread(handler_m15.get_analysis)
         rec_m15 = analysis_m15.summary.get('RECOMMENDATION')
         
-        if rec_h1 == "STRONG_BUY" and rec_m15 not in ["BUY", "STRONG_BUY"]:
+        if "BUY" in rec_h1 and rec_m15 not in ["BUY", "STRONG_BUY"]:
             return None
-        if rec_h1 == "STRONG_SELL" and rec_m15 not in ["SELL", "STRONG_SELL"]:
+        if "SELL" in rec_h1 and rec_m15 not in ["SELL", "STRONG_SELL"]:
             return None
 
         # 3. Анализ точки входа (M5)
@@ -502,9 +502,9 @@ async def get_signal(symbol):
         rec_m5 = analysis_m5.summary.get('RECOMMENDATION')
         
         # Подтверждение направления
-        if rec_h1 == "STRONG_BUY" and rec_m5 not in ["BUY", "STRONG_BUY"]:
+        if "BUY" in rec_h1 and rec_m5 not in ["BUY", "STRONG_BUY"]:
             return None
-        if rec_h1 == "STRONG_SELL" and rec_m5 not in ["SELL", "STRONG_SELL"]:
+        if "SELL" in rec_h1 and rec_m5 not in ["SELL", "STRONG_SELL"]:
             return None
 
         # 5. Фильтр VIX и Trends (Риск-офф)
@@ -535,35 +535,35 @@ async def get_signal(symbol):
                 logger.info(f"Сигнал {symbol} отменен: слишком низкая волатильность (флет)")
                 return None
 
-            if rec_h1 == "STRONG_BUY" and (bb_upper - current_price) < bb_width * 0.1:
-                logger.info(f"Сигнал {symbol} отменен: цена слишком близко к верхней полосе")
+            if "BUY" in rec_h1 and (bb_upper - current_price) < bb_width * 0.05:
+                logger.info(f"Сигнал {symbol} отменен: цена слишком близко к верхней полосе (запас < 5%)")
                 return None
-            if rec_h1 == "STRONG_SELL" and (current_price - bb_lower) < bb_width * 0.1:
-                logger.info(f"Сигнал {symbol} отменен: цена слишком близко к нижней полосе")
+            if "SELL" in rec_h1 and (current_price - bb_lower) < bb_width * 0.05:
+                logger.info(f"Сигнал {symbol} отменен: цена слишком близко к нижней полосе (запас < 5%)")
                 return None
 
         # 5. EMA Crossover подтверждение (на M5)
         ema20 = analysis_m5.indicators.get("EMA20")
         ema50 = analysis_m5.indicators.get("EMA50")
         if ema20 and ema50:
-            if rec_h1 == "STRONG_BUY" and ema20 < ema50:
+            if "BUY" in rec_h1 and ema20 < ema50:
                 logger.info(f"Сигнал {symbol} (BUY) отменен: EMA20 < EMA50 на M5")
                 return None
-            if rec_h1 == "STRONG_SELL" and ema20 > ema50:
+            if "SELL" in rec_h1 and ema20 > ema50:
                 logger.info(f"Сигнал {symbol} (SELL) отменен: EMA20 > EMA50 на M5")
                 return None
-
+        
         # 6. RSI и ADX фильтры (на M15)
         if rsi:
-            if rec_h1 == "STRONG_BUY" and rsi > 70:
-                logger.info(f"Сигнал {symbol} (BUY) отменен: RSI > 70 на M15 (перекупленность)")
+            if "BUY" in rec_h1 and rsi > 75:
+                logger.info(f"Сигнал {symbol} (BUY) отменен: RSI > 75 на M15")
                 return None
-            if rec_h1 == "STRONG_SELL" and rsi < 30:
-                logger.info(f"Сигнал {symbol} (SELL) отменен: RSI < 30 на M15 (перепроданность)")
+            if "SELL" in rec_h1 and rsi < 25:
+                logger.info(f"Сигнал {symbol} (SELL) отменен: RSI < 25 на M15")
                 return None
         
-        if adx and adx < 20:
-            logger.info(f"Сигнал {symbol} отменен: ADX < 20 на M15 (слабый тренд)")
+        if adx and adx < 17:
+            logger.info(f"Сигнал {symbol} отменен: ADX < 17 на M15")
             return None
 
         # 5. Сентимент COT
@@ -697,9 +697,9 @@ async def broadcast_signals():
                 break
             await asyncio.sleep(2.0) # Увеличили задержку между чанками для стабильности
             
-        logger.info(f"--- ЦИКЛ ЗАВЕРШЕН. Отдых 120 секунд. ---")
-        bot_state["status_msg"] = "Отдых (120 сек)..."
-        await asyncio.sleep(120)
+        logger.info(f"--- ЦИКЛ ЗАВЕРШЕН. Отдых 60 секунд. ---")
+        bot_state["status_msg"] = "Отдых (60 сек)..."
+        await asyncio.sleep(60)
 
 @dp.message()
 async def cmd_handler(message: types.Message):
