@@ -10,6 +10,8 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.bot import DefaultBotProperties
 from aiohttp import ClientTimeout
 from tradingview_ta import TA_Handler, Interval
+import random
+import time as time_sync
 
 # --- Секция авто-обновления для хостинга (Bothost.ru и др.) ---
 try:
@@ -26,10 +28,18 @@ except (ImportError, AttributeError):
 # -----------------------------------------------------------
 
 # Попытка исправить кодировку в консоли Windows
+"""
 if sys.platform == "win32":
     import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+    try:
+        # Проверяем, можно ли переобернуть поток
+        if hasattr(sys.stdout, 'buffer'):
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        if hasattr(sys.stderr, 'buffer'):
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+    except (AttributeError, ValueError, io.UnsupportedOperation):
+        pass
+"""
 
 import requests
 from datetime import datetime, timedelta, time
@@ -40,14 +50,26 @@ import httpx
 import xml.etree.ElementTree as ET
 from ai_analysis import get_ai_trading_insight
 
-# Общие заголовки браузера для обхода блокировок (Cloudflare/DDoS-Guard)
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-    'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
-    'Cache-Control': 'no-cache',
-    'Pragma': 'no-cache',
-}
+# Список User-Agent для ротации
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
+    'Mozilla/5.0 (AppleWebKit/537.36, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+]
+
+def get_random_headers():
+    headers = {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+    }
+    return headers
+
+HEADERS = get_random_headers() # Дефолтные заголовки
 
 # Сентимент-кэш
 GLOBAL_SENTIMENT = {
@@ -55,6 +77,84 @@ GLOBAL_SENTIMENT = {
     "trends": "NEUTRAL",
     "retail": {}
 }
+
+class ProxyManager:
+    def __init__(self, proxies_str):
+        self.proxies = []
+        if proxies_str:
+            parts = proxies_str.split(',')
+            for p in parts:
+                p = p.strip()
+                if not p: continue
+                # Ожидаемый формат: ip:port:login:password
+                # Или просто ip:port
+                elements = p.split(':')
+                if len(elements) == 4:
+                    ip, port, user, pw = elements
+                    self.proxies.append({
+                        "http": f"http://{user}:{pw}@{ip}:{port}",
+                        "https": f"http://{user}:{pw}@{ip}:{port}"
+                    })
+                elif len(elements) == 2:
+                    ip, port = elements
+                    self.proxies.append({
+                        "http": f"http://{ip}:{port}",
+                        "https": f"http://{ip}:{port}"
+                    })
+
+    def get_proxy(self):
+        if not self.proxies:
+            return None
+        return random.choice(self.proxies)
+
+    def get_masked_proxy(self, proxy_dict):
+        if not proxy_dict:
+            return "DIRECT"
+        # Маскируем для логов: http://user:***@ip:port
+        p = proxy_dict['http']
+        if '@' in p:
+            parts = p.split('@')
+            return f"***@{parts[1]}"
+        return p
+
+class RobustProxyManager:
+    def __init__(self, file_path="proxies.txt"):
+        self.file_path = file_path
+        self.proxies = []
+        self.load_proxies()
+
+    def load_proxies(self):
+        try:
+            path = os.path.join(os.path.dirname(__file__), self.file_path)
+            if os.path.exists(path):
+                with open(path, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith('#'):
+                            continue
+                        elements = line.split(':')
+                        if len(elements) == 4:
+                            ip, port, user, pw = elements
+                            self.proxies.append(f"socks5://{user}:{pw}@{ip}:{port}")
+                        elif len(elements) == 2:
+                            ip, port = elements
+                            self.proxies.append(f"socks5://{ip}:{port}")
+                logger.info(f"Загружено {len(self.proxies)} прокси из {self.file_path}")
+            else:
+                logger.warning(f"Файл {self.file_path} не найден. Работаем без прокси.")
+        except Exception as e:
+            logger.error(f"Ошибка при загрузке прокси: {e}")
+
+    def get_proxy(self):
+        if not self.proxies:
+            return None
+        return random.choice(self.proxies)
+
+proxy_manager = RobustProxyManager()
+
+# Кэш для H1 анализа {symbol: (recommendation, timestamp)}
+h1_cache = {}
+H1_CACHE_TTL = 900  # 15 минут
 
 # Маппинг символов для отчетов COT...
 COT_MAPPING = {
@@ -342,28 +442,41 @@ async def get_signal(symbol):
         # 0. Проверка VIX (Macro Fear)
         vix = GLOBAL_SENTIMENT.get("vix")
         
-        # 1. Анализ Трендов (H1)
-        handler_h1 = TA_Handler(
-            symbol=symbol,
-            screener="forex",
-            exchange="FX_IDC",
-            interval=Interval.INTERVAL_1_HOUR,
-            timeout=10
-        )
-        analysis_h1 = await asyncio.to_thread(handler_h1.get_analysis)
-        rec_h1 = analysis_h1.summary.get('RECOMMENDATION')
+        # 1. Анализ Трендов (H1) с кэшированием
+        now_ts = time_sync.time()
+        cached_h1 = h1_cache.get(symbol)
+        
+        if cached_h1 and (now_ts - cached_h1[1]) < H1_CACHE_TTL:
+            rec_h1 = cached_h1[0]
+            logger.debug(f"Используем кэшированный тренд H1 для {symbol}: {rec_h1}")
+        else:
+            proxy = proxy_manager.get_proxy()
+            handler_h1 = TA_Handler(
+                symbol=symbol,
+                screener="forex",
+                exchange="FX_IDC",
+                interval=Interval.INTERVAL_1_HOUR,
+                timeout=10,
+                proxy=proxy
+            )
+            analysis_h1 = await asyncio.to_thread(handler_h1.get_analysis)
+            rec_h1 = analysis_h1.summary.get('RECOMMENDATION')
+            h1_cache[symbol] = (rec_h1, now_ts)
+            logger.info(f"Обновлен тренд H1 для {symbol}: {rec_h1} (через {proxy or 'DIRECT'})")
         
         # Тренд должен быть сильным
         if rec_h1 not in ["STRONG_BUY", "STRONG_SELL"]:
             return None
 
         # 2. Анализ Сигнала (M15)
+        proxy = proxy_manager.get_proxy()
         handler_m15 = TA_Handler(
             symbol=symbol,
             screener="forex",
             exchange="FX_IDC",
             interval=Interval.INTERVAL_15_MINUTES,
-            timeout=10
+            timeout=10,
+            proxy=proxy
         )
         analysis_m15 = await asyncio.to_thread(handler_m15.get_analysis)
         rec_m15 = analysis_m15.summary.get('RECOMMENDATION')
@@ -374,12 +487,14 @@ async def get_signal(symbol):
             return None
 
         # 3. Анализ точки входа (M5)
+        proxy = proxy_manager.get_proxy()
         handler_m5 = TA_Handler(
             symbol=symbol,
             screener="forex",
             exchange="FX_IDC",
             interval=Interval.INTERVAL_5_MINUTES,
-            timeout=10
+            timeout=10,
+            proxy=proxy
         )
         analysis_m5 = await asyncio.to_thread(handler_m5.get_analysis)
         rec_m5 = analysis_m5.summary.get('RECOMMENDATION')
@@ -468,9 +583,26 @@ async def get_signal(symbol):
         }
 
     except Exception as e:
-        if "429" in str(e):
+        error_str = str(e)
+        if "429" in error_str:
+            logger.warning(f"429 Limit на {symbol}. Пробуем другой прокси...")
             return "RATE_LIMIT"
         logger.error(f"Ошибка при анализе {symbol}: {e}")
+    return None
+
+async def get_signal_robust(symbol):
+    """Обертка над get_signal для повторных попыток с разными прокси"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        result = await get_signal(symbol)
+        if result == "RATE_LIMIT":
+            if attempt < max_retries - 1:
+                # Ждем чуть-чуть перед сменой прокси
+                await asyncio.sleep(random.uniform(1, 3))
+                continue
+            else:
+                return "RATE_LIMIT"
+        return result
     return None
 
 async def broadcast_signals():
@@ -498,7 +630,8 @@ async def broadcast_signals():
         
         async def process_symbol(symbol):
             try:
-                signal_data = await get_signal(symbol)
+                # Используем робастную версию с повторами через разные прокси
+                signal_data = await get_signal_robust(symbol)
                 
                 if signal_data == "RATE_LIMIT":
                     return "RATE_LIMIT"

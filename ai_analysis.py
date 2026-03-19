@@ -24,13 +24,17 @@ if GEMINI_API_KEY:
 from google import genai
 
 # Попытка исправить кодировку для Windows консоли
+"""
 if sys.platform == "win32":
     import io
     try:
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
-    except Exception:
+        if hasattr(sys.stdout, 'buffer'):
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        if hasattr(sys.stderr, 'buffer'):
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+    except (AttributeError, ValueError, io.UnsupportedOperation):
         pass
+"""
 
 logger = logging.getLogger(__name__)
 
