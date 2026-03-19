@@ -40,6 +40,15 @@ import httpx
 import xml.etree.ElementTree as ET
 from ai_analysis import get_ai_trading_insight
 
+# Общие заголовки браузера для обхода блокировок (Cloudflare/DDoS-Guard)
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+    'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache',
+}
+
 # Сентимент-кэш
 GLOBAL_SENTIMENT = {
     "vix": "NEUTRAL",
@@ -133,7 +142,7 @@ class COTFetcher:
     async def update_cot(self):
         try:
             logger.info("Обновление COT отчетов (CFTC)...")
-            response = await asyncio.to_thread(requests.get, self.url, timeout=15)
+            response = await asyncio.to_thread(requests.get, self.url, headers=HEADERS, timeout=15)
             if response.status_code == 200:
                 content = response.text
                 f = io.StringIO(content)
@@ -194,7 +203,7 @@ class NewsFetcher:
     async def fetch_news(self):
         try:
             logger.info("Обновление экономического календаря...")
-            response = await asyncio.to_thread(requests.get, self.url, timeout=15)
+            response = await asyncio.to_thread(requests.get, self.url, headers=HEADERS, timeout=15)
             if response.status_code == 200:
                 root = ET.fromstring(response.content)
                 events = []
@@ -278,7 +287,7 @@ async def get_trends_sentiment():
     global GLOBAL_SENTIMENT
     try:
         # Используем открытый API Alternative.me для индекса страха и жадности
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(headers=HEADERS) as client:
             r = await client.get("https://api.alternative.me/fng/?limit=1", timeout=10)
             if r.status_code == 200:
                 data = r.json()
