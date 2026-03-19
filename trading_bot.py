@@ -538,7 +538,7 @@ async def broadcast_signals():
                 logger.error(f"Ошибка при обработке {symbol}: {e}")
                 return None
 
-        chunk_size = 4 # Увеличили размер чанка для скорости
+        chunk_size = 3 # Уменьшили размер чанка, чтобы снизить пиковую нагрузку на API
         market_results = []
         for i in range(0, len(SYMBOLS), chunk_size):
             chunk = SYMBOLS[i:i + chunk_size]
@@ -548,14 +548,14 @@ async def broadcast_signals():
             if "RATE_LIMIT" in chunk_results:
                 bot_state["is_paused"] = True
                 bot_state["status_msg"] = "Пауза (429)"
-                logger.warning("ОБНАРУЖЕН 429! СТОП. Уходим на перерыв 7 минут...")
-                await asyncio.sleep(420)
+                logger.warning("🔴 ОБНАРУЖЕН 429! Превышены лимиты API. Уходим на перерыв 10 минут...")
+                await asyncio.sleep(600)
                 break
-            await asyncio.sleep(1.0) # Уменьшили задержку между чанками
+            await asyncio.sleep(2.0) # Увеличили задержку между чанками для стабильности
             
-        logger.info(f"--- ЦИКЛ ЗАВЕРШЕН. Отдых 60 секунд. ---")
-        bot_state["status_msg"] = "Отдых (60 сек)..."
-        await asyncio.sleep(60)
+        logger.info(f"--- ЦИКЛ ЗАВЕРШЕН. Отдых 120 секунд. ---")
+        bot_state["status_msg"] = "Отдых (120 сек)..."
+        await asyncio.sleep(120)
 
 @dp.message()
 async def cmd_handler(message: types.Message):

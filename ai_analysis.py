@@ -66,7 +66,8 @@ async def get_ai_trading_insight(symbol, signal_type, indicators, news_context="
     Сформулируй профессиональное мнение.
     """
 
-    models_to_try = ['gemini-2.0-flash', 'gemini-flash-latest', 'gemini-2.0-flash-lite']
+    # Список моделей от самой "умной" к более легким
+    models_to_try = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash']
 
     for model_name in models_to_try:
         try:
@@ -74,14 +75,18 @@ async def get_ai_trading_insight(symbol, signal_type, indicators, news_context="
                 model=model_name,
                 contents=prompt
             )
-            return response.text.strip()
+            if response and response.text:
+                return response.text.strip()
         except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                logger.warning(f"⚠️ Лимит API превышен для {model_name}. Ждем...")
+                return "⚠️ Анализ ИИ временно недоступен (лимиты API ключа)."
+            
             logger.warning(f"Ошибка с моделью {model_name}: {e}")
-            if "429" in str(e):
-                await asyncio.sleep(2)
             continue
 
-    return "⚠️ Анализ ИИ временно недоступен (лимиты API)."
+    return "⚠️ Не удалось получить анализ ИИ (ошибка сервиса)."
 
 if __name__ == "__main__":
     async def test():
